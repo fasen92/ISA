@@ -14,11 +14,13 @@
 #include <string.h>
 #include <stdint.h>
 #include "ip-prefix.h"
+#include "dhcp-stats.h"
 
 static int takenArr = 0;
+static int sizeArr = 2;
 
 ipPrefix* allocatePrefixArray() {
-    ipPrefix* prefixes = (ipPrefix*)malloc(2 * sizeof(ipPrefix));
+    ipPrefix* prefixes = (ipPrefix*) malloc (2 * sizeof(ipPrefix));
     if (prefixes == NULL) {
         fprintf(stderr, "ERROR: Malloc has failed\n");
         exit(1);
@@ -26,18 +28,20 @@ ipPrefix* allocatePrefixArray() {
     return prefixes;
 }
 
-void addPrefix(ipPrefix* prefixes, ipPrefix prefix) {
-    int sizeArr = sizeof(*prefixes) / sizeof(ipPrefix);
-    if (sizeArr == takenArr) {
-        sizeArr *= 2; // Double the size of the array
-        prefixes = (ipPrefix*) realloc (prefixes, sizeArr * sizeof(ipPrefix));
-        if (prefixes == NULL) {
+void addPrefix(ipPrefix** prefixes, ipPrefix prefix) {
+    if (sizeArr - 1 == takenArr) {
+        sizeArr += 2; // Double the size of the array
+        ipPrefix* newPrefixes = (ipPrefix*)realloc(*prefixes, sizeArr * sizeof(ipPrefix));
+        if (newPrefixes == NULL) {
             fprintf(stderr, "ERROR: Realloc has failed\n");
-            freePrefixArray(prefixes);
+            freePrefixArray(*prefixes);
+            freeMem();
             exit(2);
         }
+        *prefixes = newPrefixes;
     }
-    prefixes[takenArr] = prefix;
+    
+    (*prefixes)[takenArr] = prefix;
     takenArr++;
 }
 
@@ -70,4 +74,8 @@ uint32_t convertIP(char *ipStr){
     }
 
     return ipInt;
+}
+
+int getTaken(){
+    return takenArr;
 }

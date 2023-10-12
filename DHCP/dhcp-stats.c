@@ -15,35 +15,236 @@
 #include <getopt.h>
 #include <regex.h>
 #include <string.h>
+#include <signal.h>
+#include <inttypes.h>
+#include <ncurses.h>
+#include <math.h>
 #include "ip-prefix.h"
+#include "dhcp-stats.h"
 
 pcap_t *sniffHandle;
 char *interF;
 char *file;
 char *compFilter;
+uint32_t *ipTaken;
+static int sizeArr = 2;
+
+int main(int argc, char *argv[])
+{
+    int interSet = 0;
+    int taken= 0;
+    interF = malloc(40);
+    if (interF == NULL)
+    {
+        fprintf(stderr, "ERROR: Malloc has failed\n");
+        exit(1);
+    }
+    file = malloc(100);
+    if (file == NULL)
+    {
+        fprintf(stderr, "ERROR: Malloc has failed\n");
+        freeMem();
+        exit(1);
+    }
+    compFilter = malloc(50);
+    if (compFilter == NULL)
+    {
+        fprintf(stderr, "ERROR: Malloc has failed\n");
+        freeMem();
+        exit(1);
+    }
+    char errbuf[PCAP_ERRBUF_SIZE];
+    struct sigaction sig;
+    sig.sa_handler = catch_end;
+    sigaction(SIGINT, &sig, NULL);
+    ipPrefix *prefixes = allocatePrefixArray();
+    ipTaken = allocateArr(prefixes);
+
+    prefixes = getArgs(argc, argv, interF, file, &interSet, prefixes);
+
+    Configuration conf[1] = {{&prefixes, ipTaken, &taken}};   
+
+    struct bpf_program fp;
+    bpf_u_int32 mask;
+    bpf_u_int32 net;
+
+
+    if (interSet == 1)
+    {
+        // getting netmask of int
+        if (pcap_lookupnet(interF, &net, &mask, errbuf) == -1)
+        {
+            fprintf(stderr, "ERROR : Netmask couldn't be optained\n");
+            net = 0;
+            mask = 0;
+        }
+
+        // opening int for sniffing
+        sniffHandle = pcap_open_live(interF, BUFSIZ, 0, 1000, errbuf);
+        if (sniffHandle == NULL)
+        {
+            fprintf(stderr, "ERROR: Interface cannot be openned %s\n", errbuf);
+            freeMem();
+            freePrefixArray(prefixes);
+            exit(22);
+        }
+        
+        strcpy(compFilter, "dst port 68");
+
+        // compiling filter
+        if(pcap_compile(sniffHandle, &fp, compFilter, 0, net) == -1){
+            fprintf(stderr, "ERROR: Couldn't parse filter %s : %s\n", compFilter, pcap_geterr(sniffHandle));
+            free(interF);
+            free(compFilter);
+            exit(23);
+        }
+
+        // setting filter
+        if(pcap_setfilter(sniffHandle, &fp) == -1){
+            fprintf(stderr, "ERROR: Couldn't install filter %s: %s\n", compFilter, pcap_geterr(sniffHandle));
+            freeMem();
+            freePrefixArray(prefixes);
+            exit(24);
+        }
+
+        if(pcap_loop(sniffHandle, -1, handlePacket, (u_char*)conf) == -1){
+            pcap_close(sniffHandle);
+            freeMem();
+            freePrefixArray(prefixes);
+            fprintf(stderr, "ERROR: Capturing of packets failed\n");
+            exit(25);
+        }
+
+    }else{
+        sniffHandle = pcap_open_offline(file, errbuf);
+
+        if (sniffHandle == NULL) {
+            fprintf(stderr, "Error opening PCAP file: %s\n", errbuf);
+            freeMem();
+            freePrefixArray(prefixes);
+            exit(26);
+        }
+
+        strcpy(compFilter, "dst port 68");
+
+        // compiling filter
+        if(pcap_compile(sniffHandle, &fp, compFilter, 0, net) == -1){
+            fprintf(stderr, "ERROR: Couldn't parse filter %s : %s\n", compFilter, pcap_geterr(sniffHandle));
+            free(interF);
+            free(compFilter);
+            exit(23);
+        }
+
+        // setting filter
+        if(pcap_setfilter(sniffHandle, &fp) == -1){
+            fprintf(stderr, "ERROR: Couldn't install filter %s: %s\n", compFilter, pcap_geterr(sniffHandle));
+            freeMem();
+            freePrefixArray(prefixes);
+            exit(24);
+        }
+
+        struct pcap_pkthdr *header;
+        const unsigned char *packet_data;
+
+        printPrefixes(prefixes, 1); 
+
+        while (pcap_next_ex(sniffHandle, &header, &packet_data) >= 0) {
+            ipTaken = packet_handle(prefixes, ipTaken, &taken, &packet_data);
+        }
+    }
+
+    // wait for a key before clearing terminal
+    printPrefixes(prefixes,-1);
+    endwin();
+    pcap_close(sniffHandle);
+    freeMem();
+    freePrefixArray(prefixes);
+    exit(0);
+}
 
 void freeMem(){
     free(interF);
     free(file);
     free(compFilter);
+    free(ipTaken);
 }
 
-void handlePacket(unsigned char *args, const struct pcap_pkthdr *header, const unsigned char *packet){
-    printf("hehe\n");
-    uint8_t opcode = packet[240];
+uint32_t* packet_handle(ipPrefix *prefixes, uint32_t *ipTaken, int *taken, const unsigned char **packet_data){
+    int isSubnet = 0;
+    uint8_t opcode = (*packet_data)[14+20+8]; // ether header + ip header + udp header -> DHCP packet (first 8bits is opcode)
 
-    // Check if it's a DHCP ACK (opcode 2)
-    if (12) {
-        // Extract yiaddr (assigned IP address)
-        uint32_t yiaddr[4];
+    // check if it's a DHCP ACK 
+    if (opcode == 2) {
+        // extract yiaddr
+        uint32_t yiaddr = 0 ;
+        
+        // yiaddr starts at 17th byte of DHCP packet (pointer to DHCP packet + 16)
         for (int i = 0; i < 4; i++) {
-            yiaddr[i] = packet[18 + 20 + 8 + 16];
+            yiaddr = (yiaddr << 8) | (*packet_data)[14 + 20 + 8 + 16 + i];
         }
-        printf("DHCP ACK - Assigned IP address: %d.%d.%d.%d\n", yiaddr[0], yiaddr[1], yiaddr[2], yiaddr[3]);
+
+        for(int i = 0; i < (*taken); i++){
+            if(ipTaken[i] == yiaddr){
+                return ipTaken;
+            }
+        }
+
+        for(int i = 0; i < getTaken(); i++){
+            if(subnetCheck(yiaddr,prefixes[i])){
+                prefixes[i].slotsTaken++;
+                isSubnet = 1;
+                printPrefixes(prefixes,0);
+            }
+        }
+
+        if(isSubnet){
+            addAddr(&ipTaken, yiaddr, taken, prefixes);
+        }
+    }
+
+    return ipTaken;
+}
+
+void handlePacket(u_char *user, const struct pcap_pkthdr *header, const unsigned char *packet){
+    (void)header;
+    Configuration *args = (Configuration *)user;
+    int isSubnet = 0;
+    uint8_t opcode = (uint8_t)(packet[14+20+8]); // ether header + ip header + udp header -> DHCP packet (first 8bits is opcode)
+
+    printf("opcode - %u\n",opcode);
+    // check if it's a DHCP ACK 
+    if (opcode == 2) {
+        // extract yiaddr
+        uint32_t yiaddr = 0; //= (u_int32_t)(packet[14 + 20 + 8 + 16]); // yiaddr starts at 17th byte of DHCP packet (pointer to DHCP packet + 16)
+        
+        for (int i = 0; i < 4; i++) {
+            printf("Byte %d: %02X\n", i, packet[14 + 20 + 8 + 16 + i]);
+        }
+
+        for (int i = 0; i < 4; i++) {
+            yiaddr |= ((uint32_t)packet[14 + 20 + 8 + 16 + i] << (i * 8));
+            //yiaddr = (yiaddr << 8) | packet[14 + 20 + 8 + 16 + i];
+        }
+
+        for(int i = 0; i < *(args->taken); i++){
+            if(args[0].ipTaken[i] == yiaddr){
+                return;
+            }
+        }
+
+        for(int i = 0; i < getTaken(); i++){
+            if(subnetCheck(yiaddr,*(args[0].prefixes[i]))){
+                args[0].prefixes[i]->slotsTaken++;
+            }
+        }
+
+        if(isSubnet){
+            addAddr(&args[0].ipTaken, yiaddr, args[0].taken, *(args[0].prefixes));
+        }
     }
 }
 
-void getArgs(int argc, char *argv[], char *interF, char *file, int *interSet, ipPrefix* prefixes){
+ipPrefix* getArgs(int argc, char *argv[], char *interF, char *file, int *interSet, ipPrefix* prefixes){
     char* pattern = "^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\/([0-9]|[1-2][0-9]|3[0-2])$";
     char *short_options = "r:i:";
     int fileSet = 0;
@@ -114,15 +315,16 @@ void getArgs(int argc, char *argv[], char *interF, char *file, int *interSet, ip
             newPrefix.mask = atoi(mask);
 
             // calculate number of possible hosts
-            newPrefix.slotsMax = (2 ^ (32 - newPrefix.mask)) - 2;
+            newPrefix.slotsMax = (int) (pow(2, 32 - newPrefix.mask) - (double)2);
             newPrefix.slotsTaken = 0;
             
             // get rid of last 3 chars to get only IP address 
             argv[i][strlen(argv[i])-3] = '\0';
 
             newPrefix.prefixBin = convertIP(argv[i]);
+            //printf("%s -- %d -- %d -- %d --\n",newPrefix.prefix, newPrefix.mask, newPrefix.slotsMax, newPrefix.slotsTaken);
 
-            addPrefix(prefixes, newPrefix);
+            addPrefix(&prefixes, newPrefix);
             
         } else if (match == REG_NOMATCH) {
             fprintf(stderr,"ERROR: Invalid IP prefix: %s\n", argv[i]);
@@ -152,116 +354,88 @@ void getArgs(int argc, char *argv[], char *interF, char *file, int *interSet, ip
     }
     
     regfree(&regex);
+    return prefixes;
 }
 
-int main(int argc, char *argv[])
+int subnetCheck(uint32_t yiaddr, ipPrefix prefix) {
+    //printf("%" PRIu32"--%" PRIu32"\n",yiaddr,prefix.prefixBin);
+    uint32_t prefMask = 0xFFFFFFFF << (32 - prefix.mask);
+    return (yiaddr & prefMask) == (prefix.prefixBin & prefMask);
+}
+
+void catch_end(int sig_num)
 {
-    int numP = 2, interSet = 0;
-    interF = malloc(40 * sizeof(char));
-    if (interF == NULL)
-    {
-        fprintf(stderr, "ERROR: Malloc has failed\n");
-        exit(1);
-    }
-    file = malloc(100 * sizeof(char));
-    if (file == NULL)
-    {
-        fprintf(stderr, "ERROR: Malloc has failed\n");
-        freeMem();
-        exit(1);
-    }
-    compFilter = malloc(50 * sizeof(char));
-    if (compFilter == NULL)
-    {
-        fprintf(stderr, "ERROR: Malloc has failed\n");
-        freeMem();
-        exit(1);
-    }
-    char errbuf[PCAP_ERRBUF_SIZE];
-    // struct sigaction sig;
-    // sig.sa_handler = catch_end;
-    // sigaction(SIGINT, &sig, NULL);
-    ipPrefix *prefixes = allocatePrefixArray();
+    (void)sig_num; // to get rid of warning
+    endwin();
+}
 
-    getArgs(argc, argv, interF, file, &interSet, prefixes);
 
-    if (interSet == 1)
-    {
-        struct bpf_program fp;
-        bpf_u_int32 mask;
-        bpf_u_int32 net;
-
-        // getting netmask of int
-        if (pcap_lookupnet(interF, &net, &mask, errbuf) == -1)
-        {
-            fprintf(stderr, "ERROR : Netmask couldn't be optained\n");
-            net = 0;
-            mask = 0;
-        }
-
-        // opening int for sniffing
-        sniffHandle = pcap_open_live(interF, BUFSIZ, 0, 1000, errbuf);
-        if (sniffHandle == NULL)
-        {
-            fprintf(stderr, "ERROR: Interface cannot be openned %s\n", errbuf);
-            freeMem();
-            freePrefixArray(prefixes);
-            exit(22);
-        }
-
-        
-        strcpy(compFilter, "dst port 68");
-
-        // compiling filter
-        if(pcap_compile(sniffHandle, &fp, compFilter, 0, net) == -1){
-            fprintf(stderr, "ERROR: Couldn't parse filter %s : %s\n", compFilter, pcap_geterr(sniffHandle));
-            free(interF);
-            free(compFilter);
-            exit(23);
-        }
-
-        // setting filter
-        if(pcap_setfilter(sniffHandle, &fp) == -1){
-            fprintf(stderr, "ERROR: Couldn't install filter %s: %s\n", compFilter, pcap_geterr(sniffHandle));
-            freeMem();
-            freePrefixArray(prefixes);
-            exit(24);
-        }
-
-        if(numP == 0) numP = 1;
-        if(pcap_loop(sniffHandle, -1, handlePacket, NULL) == -1){
-            pcap_close(sniffHandle);
-            freeMem();
-            freePrefixArray(prefixes);
-            fprintf(stderr, "ERROR: Capturing of packets failed\n");
-            exit(25);
-        }
-
-        pcap_close(sniffHandle);
+uint32_t* allocateArr(ipPrefix *prefixes) {
+    uint32_t* arr = (u_int32_t*)malloc(2 * sizeof(uint32_t));
+    if (arr == NULL) {
         freeMem();
         freePrefixArray(prefixes);
-        exit(0);
+        exit(1);
+    }
+    return arr;
+}
 
-    }else{
-        sniffHandle = pcap_open_offline(file, errbuf);
-
-        if (sniffHandle == NULL) {
-            fprintf(stderr, "Error opening PCAP file: %s\n", errbuf);
-            freeMem();
+void addAddr(uint32_t** arr, uint32_t addr, int *taken, ipPrefix *prefixes) {
+    //printf("%d -- %d\n", sizeArr, (*taken));
+    if (sizeArr - 1 == (*taken)) {
+        sizeArr *= 2; // Double the size of the array
+        uint32_t *newArr = (uint32_t*) realloc (*arr, sizeArr * sizeof(uint32_t));
+        if (arr == NULL) {
+            fprintf(stderr, "ERROR: Realloc has failed\n");
             freePrefixArray(prefixes);
-            exit(26);
+            freeMem();
+            exit(2);
+        }
+        *arr = newArr;
+    }
+    //printf("%d taken %u",(*taken),addr);
+    (*arr)[(*taken)] = addr;
+    (*taken)++;
+}
+
+void printPrefixes(ipPrefix *prefixes, int refresh) {
+    initscr();  // Initialize ncurses
+    cbreak();
+    noecho();
+
+    // Create a window for the table
+    int numRows = getTaken() + 3;
+    int numCols = 70;
+    WINDOW *table = newwin(numRows, numCols, 1, 1);
+    box(table, 0, 0);
+
+    // Print table headers
+    mvwprintw(table, 1, 2, "IP-Prefix");
+    mvwprintw(table, 1, 20, "Max-hosts");
+    mvwprintw(table, 1, 35, "Allocated addresses");
+    mvwprintw(table, 1, 55, "Utilization");
+
+    // Print data in the table
+    for (int i = 0; i < getTaken(); i++) {
+        mvwprintw(table, i + 2, 2, prefixes[i].prefix);
+        mvwprintw(table, i + 2, 20, "%d", prefixes[i].slotsMax);
+        mvwprintw(table, i + 2, 35, "%d", prefixes[i].slotsTaken);
+
+        // Calculate utilization
+        float utilization;
+        if(prefixes[i].slotsTaken != 0){
+            utilization = (float)prefixes[i].slotsTaken / prefixes[i].slotsMax * 100.0;
+        }else{
+            utilization = 0;
         }
 
-        struct pcap_pkthdr header;
-        const unsigned char *packet_data;
+        mvwprintw(table, i + 2, 55, "%.2f%%", utilization);
+        wattroff(table, COLOR_PAIR(1));
+    }
 
-        while (pcap_next_ex(sniffHandle, &header, &packet_data) >= 0) {
-            printf("Packet length: %u\n", header.len);
-        }
-
-        pcap_close(sniffHandle);
-        freeMem();
-        freePrefixArray(prefixes);
-        exit(0);
+    // Refresh the table
+    wrefresh(table);
+    if(refresh == -1){
+        getch();
     }
 }

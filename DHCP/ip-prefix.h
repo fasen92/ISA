@@ -25,11 +25,13 @@ typedef struct IpPrefix {
 
 ipPrefix* allocatePrefixArray();
 
-void addPrefix(ipPrefix* array, ipPrefix prefix);
+void addPrefix(ipPrefix** array, ipPrefix prefix);
 
 void freePrefixArray(ipPrefix* array);
 
 uint32_t convertIP(char *ipStr);
+
+int getTaken();
 
 #endif /* IPPREFIX_H */
 
