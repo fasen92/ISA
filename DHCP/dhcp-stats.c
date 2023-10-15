@@ -19,6 +19,7 @@
 #include <inttypes.h>
 #include <ncurses.h>
 #include <math.h>
+#include <syslog.h>
 #include "ip-prefix.h"
 #include "dhcp-stats.h"
 
@@ -54,8 +55,7 @@ int main(int argc, char *argv[])
         exit(1);
     }
     char errbuf[PCAP_ERRBUF_SIZE];
-    struct sigaction sig;
-    sig.sa_handler = catch_end;
+    struct sigaction sig = {.sa_handler = catch_end};
     sigaction(SIGINT, &sig, NULL);
     ipPrefix *prefixes = allocatePrefixArray();
     ipTaken = allocateArr(prefixes);
@@ -107,12 +107,13 @@ int main(int argc, char *argv[])
             exit(24);
         }
 
-        if(pcap_loop(sniffHandle, -1, handlePacket, (u_char*)conf) == -1){
-            pcap_close(sniffHandle);
-            freeMem();
-            freePrefixArray(prefixes);
-            fprintf(stderr, "ERROR: Capturing of packets failed\n");
-            exit(25);
+        struct pcap_pkthdr *header;
+        const unsigned char *packet_data;
+
+        printPrefixes(prefixes, 1); 
+
+        while (pcap_next_ex(sniffHandle, &header, &packet_data) >= 0) {
+            ipTaken = packet_handle(prefixes, ipTaken, &taken, &packet_data);
         }
 
     }else{
@@ -151,10 +152,11 @@ int main(int argc, char *argv[])
         while (pcap_next_ex(sniffHandle, &header, &packet_data) >= 0) {
             ipTaken = packet_handle(prefixes, ipTaken, &taken, &packet_data);
         }
+
+        // wait for a key before clearing terminal
+        printPrefixes(prefixes,-1);
     }
 
-    // wait for a key before clearing terminal
-    printPrefixes(prefixes,-1);
     endwin();
     pcap_close(sniffHandle);
     freeMem();
@@ -203,45 +205,6 @@ uint32_t* packet_handle(ipPrefix *prefixes, uint32_t *ipTaken, int *taken, const
     }
 
     return ipTaken;
-}
-
-void handlePacket(u_char *user, const struct pcap_pkthdr *header, const unsigned char *packet){
-    (void)header;
-    Configuration *args = (Configuration *)user;
-    int isSubnet = 0;
-    uint8_t opcode = (uint8_t)(packet[14+20+8]); // ether header + ip header + udp header -> DHCP packet (first 8bits is opcode)
-
-    printf("opcode - %u\n",opcode);
-    // check if it's a DHCP ACK 
-    if (opcode == 2) {
-        // extract yiaddr
-        uint32_t yiaddr = 0; //= (u_int32_t)(packet[14 + 20 + 8 + 16]); // yiaddr starts at 17th byte of DHCP packet (pointer to DHCP packet + 16)
-        
-        for (int i = 0; i < 4; i++) {
-            printf("Byte %d: %02X\n", i, packet[14 + 20 + 8 + 16 + i]);
-        }
-
-        for (int i = 0; i < 4; i++) {
-            yiaddr |= ((uint32_t)packet[14 + 20 + 8 + 16 + i] << (i * 8));
-            //yiaddr = (yiaddr << 8) | packet[14 + 20 + 8 + 16 + i];
-        }
-
-        for(int i = 0; i < *(args->taken); i++){
-            if(args[0].ipTaken[i] == yiaddr){
-                return;
-            }
-        }
-
-        for(int i = 0; i < getTaken(); i++){
-            if(subnetCheck(yiaddr,*(args[0].prefixes[i]))){
-                args[0].prefixes[i]->slotsTaken++;
-            }
-        }
-
-        if(isSubnet){
-            addAddr(&args[0].ipTaken, yiaddr, args[0].taken, *(args[0].prefixes));
-        }
-    }
 }
 
 ipPrefix* getArgs(int argc, char *argv[], char *interF, char *file, int *interSet, ipPrefix* prefixes){
@@ -358,15 +321,18 @@ ipPrefix* getArgs(int argc, char *argv[], char *interF, char *file, int *interSe
 }
 
 int subnetCheck(uint32_t yiaddr, ipPrefix prefix) {
-    //printf("%" PRIu32"--%" PRIu32"\n",yiaddr,prefix.prefixBin);
     uint32_t prefMask = 0xFFFFFFFF << (32 - prefix.mask);
+    uint32_t broadcast = prefix.prefixBin | ~prefMask;
+    if(yiaddr == prefix.prefixBin || yiaddr == broadcast){
+        return 0;
+    }
     return (yiaddr & prefMask) == (prefix.prefixBin & prefMask);
 }
 
 void catch_end(int sig_num)
 {
     (void)sig_num; // to get rid of warning
-    endwin();
+    pcap_breakloop(sniffHandle);
 }
 
 
@@ -425,17 +391,24 @@ void printPrefixes(ipPrefix *prefixes, int refresh) {
         float utilization;
         if(prefixes[i].slotsTaken != 0){
             utilization = (float)prefixes[i].slotsTaken / prefixes[i].slotsMax * 100.0;
+            if(utilization >= 50.0){
+                openlog ("dhcp-stats", LOG_CONS | LOG_PID | LOG_NDELAY, LOG_LOCAL1);
+
+                syslog (LOG_NOTICE, "Prefix %s exceeded 50%% of allocations ", prefixes[i].prefix);
+
+                closelog ();
+            }
         }else{
             utilization = 0;
         }
 
         mvwprintw(table, i + 2, 55, "%.2f%%", utilization);
-        wattroff(table, COLOR_PAIR(1));
     }
 
     // Refresh the table
     wrefresh(table);
     if(refresh == -1){
-        getch();
+        wgetch(table);
+        endwin();
     }
 }
