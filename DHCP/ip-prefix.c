@@ -53,18 +53,18 @@ uint32_t convertIP(char *ipStr){
     uint32_t ipInt = 0;
     char *ipToken;
 
-    // tokenize string based on the period '.' separator
+    // Tokenize string based on the period '.' separator
     ipToken = strtok(ipStr, ".");
 
-    // each token represents one octet
-    // convert each octet to an integer
+    // Each token represents one octet
+    // Convert each octet to an integer
     for (int i = 0; i < 4; i++) {
         int octet = atoi(ipToken);
         
-        // shift 8 bits each time to get 32bit number
+        // Shift 8 bits each time to get 32bit number
         ipInt = (ipInt << 8) | octet;
         
-        // next token
+        // Next token
         ipToken = strtok(NULL, ".");
         
         if (ipToken == NULL && i < 3) {
