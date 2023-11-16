@@ -91,7 +91,7 @@ void printPrefix(ipPrefix *prefix);
 /**
  * @brief updates prefix with new values
  * 
- * @param prefix 
+ * @param prefix updated prefix
  * @param position position of prefix to be updated
  */
 void updatePrefix(ipPrefix *prefix, int position);

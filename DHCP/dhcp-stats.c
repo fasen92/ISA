@@ -226,7 +226,7 @@ uint32_t *packet_handle(ipPrefix *prefixes, uint32_t *ipTaken, int *taken, struc
                 // yiaddr starts at 17th byte of DHCP packet (pointer to DHCP packet + 16)
                 for (int i = 0; i < 4; i++)
                 {
-                    yiaddr = (yiaddr << 8) | dhcpPacket[16 + i];
+                    yiaddr = (yiaddr << 8) | dhcpPacket[16 + i]; // convert to binary form
                 }
 
                 // If IP address is in array, it has been already counted
@@ -414,6 +414,7 @@ uint32_t *allocateArr(ipPrefix *prefixes)
     uint32_t *arr = (uint32_t *)malloc(2 * sizeof(uint32_t)); // allocate array of 2 uint_32
     if (arr == NULL)
     {
+        endwin();
         freeMem();
         freePrefixArray(prefixes);
         exit(1);
@@ -450,14 +451,14 @@ void printPrefix(ipPrefix *prefix) {
 }
 
 void updatePrefix(ipPrefix *prefix, int position) {
-    float utilization = ((float)prefix->slotsTaken / prefix->slotsMax) * 100;
+    float utilization = ((float)prefix->slotsTaken / prefix->slotsMax) * 100; // calculate utilization
     move(position, 0); // Move cursor to the line where prefix information starts
     if(utilization < 50.0){
         printw("\r%-20s%-12d%-22d%.2f%%", prefix->prefix, prefix->slotsMax, prefix->slotsTaken,utilization );
     }else{
         printw("\r%-20s%-12d%-22d%.2f%%\t- 50%% has been exceede -", prefix->prefix, prefix->slotsMax, prefix->slotsTaken,utilization );
         
-        openlog("dhcp-stats", LOG_CONS | LOG_PID | LOG_NDELAY, LOG_LOCAL1);
+        openlog("dhcp-stats", LOG_CONS | LOG_PID | LOG_NDELAY, LOG_LOCAL1); // opening log file
 
         syslog(LOG_NOTICE, "Prefix %s exceeded 50%% of allocations ", prefix->prefix);
 

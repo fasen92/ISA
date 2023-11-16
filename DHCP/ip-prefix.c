@@ -36,6 +36,7 @@ void addPrefix(ipPrefix** prefixes, ipPrefix prefix) {
             fprintf(stderr, "ERROR: Realloc has failed\n");
             freePrefixArray(*prefixes);
             freeMem();
+            endwin();
             exit(2);
         }
         *prefixes = newPrefixes;
