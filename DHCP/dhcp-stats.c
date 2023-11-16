@@ -61,10 +61,20 @@ int main(int argc, char *argv[])
     ipTaken = allocateArr(prefixes);
 
     prefixes = getArgs(argc, argv, interF, file, &interSet, prefixes);
+    
+    initscr(); 
+    printHeader();
+    
+    for (int i = 0; i < getTaken(); i++) {
+        printPrefix(&prefixes[i]);
+    }
 
     struct bpf_program fp;
     bpf_u_int32 mask;
     bpf_u_int32 net;
+
+    struct pcap_pkthdr *header;
+    const unsigned char *packet_data;
 
     if (interSet == 1)
     {
@@ -106,11 +116,6 @@ int main(int argc, char *argv[])
             exit(24);
         }
 
-        struct pcap_pkthdr *header;
-        const unsigned char *packet_data;
-
-        printPrefixes(prefixes, 1); // Print prefixes with default values
-
         // Sniffing of packets
         while (pcap_next_ex(sniffHandle, &header, &packet_data) >= 0)
         {
@@ -126,7 +131,7 @@ int main(int argc, char *argv[])
             fprintf(stderr, "Error opening PCAP file: %s\n", errbuf);
             freeMem();
             freePrefixArray(prefixes);
-            exit(26);
+            exit(25);
         }
 
         strcpy(compFilter, "dst port 68 or vlan");
@@ -149,20 +154,13 @@ int main(int argc, char *argv[])
             exit(24);
         }
 
-        struct pcap_pkthdr *header;
-        const unsigned char *packet_data;
-
-        printPrefixes(prefixes, 1);
-
         while (pcap_next_ex(sniffHandle, &header, &packet_data) >= 0)
         {
             ipTaken = packet_handle(prefixes, ipTaken, &taken, &header, &packet_data);
         }
-
-        // Wait for a key before clearing terminal
-        printPrefixes(prefixes, -1);
     }
 
+    getch(); // Wait for a key before clearing terminal
     endwin(); // Close ncurces
     pcap_close(sniffHandle);
     freeMem();
@@ -181,21 +179,32 @@ void freeMem()
 uint32_t *packet_handle(ipPrefix *prefixes, uint32_t *ipTaken, int *taken, struct pcap_pkthdr **header, const unsigned char **packetData)
 {
     int isSubnet = 0;
-    uint8_t opcode;
+    uint8_t opcode = 0;
     const uint8_t *dhcpPacket;
+    const unsigned char *data = *packetData;
     if ((*header)->caplen >= 14 + 4)
-    { // at least 14 bytes for the Ethernet header and 4 bytes for VLAN tag
-        uint16_t ethertype = ((*packetData)[12] << 8) | (*packetData)[13];
-        if (ethertype == 0x8100) // vlan packet
-        {                                         
-            opcode = (*packetData)[14 + 20 + 8 + 4]; // 4 bytes needs to be added for VLAN tag
-            dhcpPacket = packetData[14 + 20 + 8 + 4];
-        }
-    }
-    else
     {
-        opcode = (*packetData)[14 + 20 + 8]; // ether header + ip header + udp header -> DHCP packet (first 8bits is opcode)
-        dhcpPacket = packetData[14 + 20 + 8];
+        // At least 14 bytes for the Ethernet header and 4 bytes for the VLAN tag
+        uint16_t ethertype = ((*packetData)[12] << 8) | (*packetData)[13];
+        if (ethertype == 0x8100)
+        { // VLAN packet
+            if ((*header)->caplen >= 14 + 4 + 20 + 8 + 4)
+            {
+                // Ensure sufficient length for VLAN tag, IP header, UDP header, and DHCP opcode
+                opcode = (*packetData)[14 + 20 + 8 + 4];
+                dhcpPacket = data +14 + 20 + 8 + 4;
+            }
+        }
+        else
+        {
+            // Non-VLAN packet
+            if ((*header)->caplen >= 14 + 20 + 8)
+            {
+                // Ensure sufficient length for Ether header, IP header, UDP header, and DHCP opcode
+                opcode = (*packetData)[14 + 20 + 8];
+                dhcpPacket = data + 14 + 20 + 8;
+            }
+        }
     }
 
     // Check if it's a DHCP ACK
@@ -203,14 +212,14 @@ uint32_t *packet_handle(ipPrefix *prefixes, uint32_t *ipTaken, int *taken, struc
     {
         const uint8_t *dhcpOptions = dhcpPacket + 240;
         uint8_t optionCode;
-        uint8_t lenghtOP = 0x0;
+        uint8_t lenghtOP = 0;
 
         for (; (*dhcpOptions) != 255; dhcpOptions += lenghtOP)
         {
             optionCode = *dhcpOptions++;
             lenghtOP = *dhcpOptions++;
 
-            if (optionCode == 53 && lenghtOP == 5)
+            if (optionCode == 53 && lenghtOP == 1 && *(dhcpOptions) == 5)
             { // Check for DHCP ACK
                 uint32_t yiaddr = 0;
 
@@ -236,7 +245,7 @@ uint32_t *packet_handle(ipPrefix *prefixes, uint32_t *ipTaken, int *taken, struc
                     {
                         prefixes[i].slotsTaken++;
                         isSubnet = 1;
-                        printPrefixes(prefixes, 0);
+                        updatePrefix(&prefixes[i],i+1);
                     }
                 }
 
@@ -431,58 +440,28 @@ void addAddr(uint32_t **arr, uint32_t addr, int *taken, ipPrefix *prefixes)
     (*taken)++;              // Increment number of taken addresses
 }
 
-void printPrefixes(ipPrefix *prefixes, int refresh)
-{
-    initscr(); // Initializes ncurses
-    cbreak();
-    noecho();
+void printHeader() {
+    printw("%-20s%-12s%-22s%s\n", "IP-Prefix", "Max-hosts", "Allocated addresses", "Utilization");
+}
 
-    // Creates a window for the table
-    int numRows = getTaken() + 3;
-    int numCols = 70;
-    WINDOW *table = newwin(numRows, numCols, 1, 1);
-    box(table, 0, 0);
+void printPrefix(ipPrefix *prefix) {
+    printw("%-20s%-12d%-22d%.2f%%\n", prefix->prefix, prefix->slotsMax,
+           prefix->slotsTaken, 0.0);
+}
 
-    // Prints table headers
-    mvwprintw(table, 1, 2, "IP-Prefix");
-    mvwprintw(table, 1, 20, "Max-hosts");
-    mvwprintw(table, 1, 35, "Allocated addresses");
-    mvwprintw(table, 1, 55, "Utilization");
+void updatePrefix(ipPrefix *prefix, int position) {
+    float utilization = ((float)prefix->slotsTaken / prefix->slotsMax) * 100;
+    move(position, 0); // Move cursor to the line where prefix information starts
+    if(utilization < 50.0){
+        printw("\r%-20s%-12d%-22d%.2f%%", prefix->prefix, prefix->slotsMax, prefix->slotsTaken,utilization );
+    }else{
+        printw("\r%-20s%-12d%-22d%.2f%%\t- 50%% has been exceede -", prefix->prefix, prefix->slotsMax, prefix->slotsTaken,utilization );
+        
+        openlog("dhcp-stats", LOG_CONS | LOG_PID | LOG_NDELAY, LOG_LOCAL1);
 
-    // Prints data in the table
-    for (int i = 0; i < getTaken(); i++)
-    {
-        mvwprintw(table, i + 2, 2, prefixes[i].prefix);
-        mvwprintw(table, i + 2, 20, "%d", prefixes[i].slotsMax);
-        mvwprintw(table, i + 2, 35, "%d", prefixes[i].slotsTaken);
+        syslog(LOG_NOTICE, "Prefix %s exceeded 50%% of allocations ", prefix->prefix);
 
-        // Calculates utilization of prefix
-        float utilization;
-        if (prefixes[i].slotsTaken != 0)
-        {
-            utilization = (float)prefixes[i].slotsTaken / prefixes[i].slotsMax * 100.0;
-            if (utilization >= 50.0)
-            {
-                openlog("dhcp-stats", LOG_CONS | LOG_PID | LOG_NDELAY, LOG_LOCAL1);
-
-                syslog(LOG_NOTICE, "Prefix %s exceeded 50%% of allocations ", prefixes[i].prefix);
-
-                closelog();
-            }
-        }
-        else
-        {
-            utilization = 0;
-        }
-
-        mvwprintw(table, i + 2, 55, "%.2f%%", utilization);
+        closelog();
     }
-
-    // Refresh the table
-    wrefresh(table);
-    if (refresh == -1)
-    {
-        wgetch(table);
-        endwin();
-    }
+    refresh();
 }

@@ -76,11 +76,24 @@ int subnetCheck(uint32_t yiaddr, ipPrefix prefix);
 uint32_t* packet_handle(ipPrefix *prefixes, uint32_t *ipTaken, int *taken, struct pcap_pkthdr **header, const unsigned char **packetData);
 
 /**
- * @brief Function prints informations about each prefix
+ * @brief prints header of stats
  * 
- * @param prefixes array of prefixes
- * @param refresh flag used to at the end of program to keep output displayed
  */
-void printPrefixes(ipPrefix *prefixes, int refresh);
+void printHeader();
+
+/**
+ * @brief prints default stats of given prefix
+ * 
+ * @param prefix 
+ */
+void printPrefix(ipPrefix *prefix);
+
+/**
+ * @brief updates prefix with new values
+ * 
+ * @param prefix 
+ * @param position position of prefix to be updated
+ */
+void updatePrefix(ipPrefix *prefix, int position);
 
 #endif /* DHCPSTATS_H */

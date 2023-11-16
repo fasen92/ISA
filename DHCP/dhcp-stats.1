@@ -1,0 +1,107 @@
+.TH DHCP-STATS 1 
+.SH NAME
+dhcp-stats - program to monitor allocation of prefixes used by DHCP server
+
+.SH SYNOPSIS
+.B dhcp-stats 
+[\fB\-r\fR <filename>]
+<ip-prefix> [ <ip-prefix> [ ... ] ]
+.PP
+.B dhcp-stats 
+[\fB\-i\fR <interface-name>]
+<ip-prefix> [ <ip-prefix> [ ... ] ] 
+
+.SH DESCRIPTION
+The \fBdhcp-stats\fR program monitors DHCP communication on a network and stores allocation of given prefixes. 
+Statistics of given prefixes are shown in the terminal. If allocation of a prefix exceeds 50% of possible hosts, 
+the program informs the user on standard output and logs information through the syslog server.
+
+.SH OPTIONS
+.TP
+\fB-h, --help\fR
+Show help message.
+.TP
+\fB-i\fR \fIinterface\fR
+Allows you to select the interface on which the program will monitor DHCP traffic. This option may appear up to 1 time. 
+This option takes a string as its argument.
+.TP
+\fB-r\fR \fIfilename\fR
+Allows you to select a .pcap file, from which the program will read packets. This option may appear up to 1 time. 
+This option takes a .pcap file as its argument.
+.TP
+\fI<ip-prefix>\fR
+Prefix should be in format x.x.x.x/x (0-255)/(0-32). At least 1 prefix must be entered.
+
+.SH EXAMPLES
+\fBdhcp-stats -i lo 192.168.1.0/24 192.168.2.0/25\fR
+.PP
+.RS
+.nf
+Run the \fBdhcp-stats\fR command with the following syntax to display statistics for the specified subnets sniffed from interface \fIlo\fR.
+.fi
+.RE
+
+.PP
+\fBdhcp-stats -r dhcp.pcap 192.168.1.0/24 192.168.2.0/25\fR
+.PP
+.RS
+.nf
+Run the \fBdhcp-stats\fR command with the following syntax to display statistics for the specified subnets read from file \fIdhcp.pcap\fR.
+.fi
+.RE
+
+.SH EXIT STATUS
+.TP
+.B 0 (EXIT_SUCCESS)
+Successful program execution.
+
+.TP
+.B 1 (EX_MALLOC)
+Malloc has failed.
+
+.TP
+.B 2 (EX_REALLOC)
+Malloc has failed.
+Realloc has failed
+
+.TP
+.B 3 (EX_IP)
+Invalid IP address.
+
+.TP
+.B 4 (EX_REGEX)
+Failed to compile regex.
+
+.TP
+.B 10 (EX_UNKPARAM)
+Invalid argument, check
+\fIstderr\fR
+for more information.
+
+.TP
+.B 11 (EX_PREFIX)
+Invalid IP prefix.
+
+.TP
+.B 12 (EX_PREFIXREG)
+Regex match failed.
+
+.TP
+.B 22 (EX_INTERFACE)
+Interface cannot be openned.
+
+.TP
+.B 23 (EX_PARSE)
+Couldn't parse filter.
+
+.TP
+.B 24 (EX_INSTALL)
+Couldn't install filter.
+
+.TP
+.B 25 (EX_PCAP)
+Couldn't open PCAP file.
+
+
+.SH AUTHOR
+Ivan Mahut (xmahut01)
